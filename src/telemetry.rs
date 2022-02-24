@@ -30,7 +30,7 @@ pub async fn init_tracer() -> opentelemetry::sdk::trace::Tracer {
         .with_trace_config(opentelemetry::sdk::trace::config().with_resource(
             opentelemetry::sdk::Resource::new(vec![opentelemetry::KeyValue::new(
                 "service.name",
-                "foo-controller",
+                "noobaa-source-controller",
             )]),
         ))
         .install_batch(opentelemetry::runtime::Tokio)

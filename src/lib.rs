@@ -18,7 +18,7 @@ pub mod manager;
 pub use manager::Manager;
 
 /// Generated type, for crdgen
-pub use manager::Foo;
+pub use manager::NooBaaSource;
 
 /// Log and trace integrations
 pub mod telemetry;

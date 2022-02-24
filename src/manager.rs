@@ -25,17 +25,81 @@ use tokio::{
 };
 use tracing::{debug, error, event, field, info, instrument, trace, warn, Level, Span};
 
-/// Our Foo custom resource spec
-#[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
-#[kube(kind = "Foo", group = "clux.dev", version = "v1", namespaced)]
-#[kube(status = "FooStatus")]
-pub struct FooSpec {
+/// Source defines the event source
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+pub struct Source {
+    // URL of the NooNaa management RPC service
+    #[serde(rename = "rpcUrl")]
+    rpc_url: String,
+
+    // cecret name containing credentials for the NooNaa management RPC service
+    #[serde(rename = "rpcSecret")]
+    rpc_secret: String,
+
+    // Bucket name
+    bucket: String,
+}
+// KReference contains enough information to refer to Sink
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+
+pub struct KReference {
+    // kind of the referent.
+    // More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+    kind: String,
+
+    // namespace of the referent.
+    // More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
+    // This is optional field, it gets defaulted to the object holding it if left out.
+    namespace: Option<String>,
+
+    // name of the referent.
+    // More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
     name: String,
-    info: String,
+
+    // api version of the referent.
+    #[serde(rename = "apiVersion")]
+    api_version: Option<String>,
+
+    // group of the API, without the version of the group. This can be used as an alternative to the APIVersion, and then resolved using ResolveGroup.
+    // Note: This API is EXPERIMENTAL and might break anytime. For more details: https://github.com/knative/eventing/issues/5086
+    group: Option<String>,
+}
+
+// Destination represents a target of an invocation over HTTP.
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+pub struct Destination {
+    // ref points to an Addressable.
+    #[serde(rename = "ref")]
+    reference: Option<KReference>,
+
+    // uri can be an absolute URL(non-empty scheme and non-empty host) pointing to the target or a relative URI. Relative URIs will be resolved using the base URI retrieved from Ref.
+    uri: Option<String>,
+}
+
+// CloudEventOverrides defines arguments for a Source that control the output
+// format of the CloudEvents produced by the Source.
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+pub struct CloudEventOverrides {
+    // extensions specify what attribute are added or overridden on the
+    // outbound event. Each `Extensions` key-value pair are set on the event as
+    // an attribute extension independently.
+    extensions: HashMap<String, String>, // map[string]string `json:"extensions,omitempty"`
+}
+
+/// NooBaa Knative Source custom resource spec
+#[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[kube(kind = "NooBaaSource", group = "knative.dev", version = "v1", namespaced)]
+#[kube(status = "NooBaaSourceStatus")]
+pub struct NooBaaSourceSpec {
+    name: String,
+    source: Source,
+    sink: Destination,
+    #[serde(rename = "ceOverrides")]
+    ce_overrides: Option<CloudEventOverrides>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
-pub struct FooStatus {
+pub struct NooBaaSourceStatus {
     is_bad: bool,
     //last_updated: Option<DateTime<Utc>>,
 }
@@ -52,7 +116,7 @@ struct Data {
 }
 
 #[instrument(skip(ctx), fields(trace_id))]
-async fn reconcile(foo: Arc<Foo>, ctx: Context<Data>) -> Result<ReconcilerAction, Error> {
+async fn reconcile(noobaa_source: Arc<NooBaaSource>, ctx: Context<Data>) -> Result<ReconcilerAction, Error> {
     let trace_id = telemetry::get_trace_id();
     Span::current().record("trace_id", &field::display(&trace_id));
     let start = Instant::now();
@@ -60,30 +124,41 @@ async fn reconcile(foo: Arc<Foo>, ctx: Context<Data>) -> Result<ReconcilerAction
     let client = ctx.get_ref().client.clone();
     ctx.get_ref().state.write().await.last_event = Utc::now();
     let reporter = ctx.get_ref().state.read().await.reporter.clone();
-    let recorder = Recorder::new(client.clone(), reporter, foo.object_ref(&()));
-    let name = ResourceExt::name(foo.as_ref());
-    let ns = ResourceExt::namespace(foo.as_ref()).expect("foo is namespaced");
-    let foos: Api<Foo> = Api::namespaced(client, &ns);
+    let recorder = Recorder::new(client.clone(), reporter, noobaa_source.object_ref(&()));
+    let name = ResourceExt::name(noobaa_source.as_ref());
+    let ns = ResourceExt::namespace(noobaa_source.as_ref()).expect("NooBaaSource is namespaced");
+    let noobaa_sources: Api<NooBaaSource> = Api::namespaced(client, &ns);
 
     let new_status = Patch::Apply(json!({
-        "apiVersion": "clux.dev/v1",
-        "kind": "Foo",
-        "status": FooStatus {
-            is_bad: foo.spec.info.contains("bad"),
+        "apiVersion": "knative.dev/v1",
+        "kind": "NooBaaSource",
+        "status": NooBaaSourceStatus {
+            is_bad: noobaa_source.spec.name.contains("bad"),
             //last_updated: Some(Utc::now()),
         }
     }));
+    info!("Reconciling NooBaaSource\"{}\" in {} new status {:?}", name, ns, new_status);
     let ps = PatchParams::apply("cntrlr").force();
-    let _o = foos
+    info!("Reconciling NooBaaSource\"{}\" in {} patch params {:?}", name, ns, ps);
+    /*
+    let _o = noobaa_sources
         .patch_status(&name, &ps, &new_status)
         .await
         .map_err(Error::KubeError)?;
+    */
+    let patch_result = noobaa_sources
+        .patch_status(&name, &ps, &new_status)
+        .await;
+    info!("Reconciling NooBaaSource\"{}\" in {} patch patch results {:?}", name, ns, patch_result);
+    patch_result.map_err(Error::KubeError)?;
 
-    if foo.spec.info.contains("bad") {
+    if noobaa_source.spec.name.contains("bad") {
+        info!("Reconciling NooBaaSource\"{}\" in {} handle bad in name", name, ns);
+
         recorder
             .publish(Event {
                 type_: EventType::Normal,
-                reason: "BadFoo".into(),
+                reason: "BadNooBaaSource".into(),
                 note: Some(format!("Sending `{}` to detention", name)),
                 action: "Correcting".into(),
                 secondary: None,
@@ -101,7 +176,7 @@ async fn reconcile(foo: Arc<Foo>, ctx: Context<Data>) -> Result<ReconcilerAction
         .observe(duration);
     //.observe_with_exemplar(duration, ex);
     ctx.get_ref().metrics.handled_events.inc();
-    info!("Reconciled Foo \"{}\" in {}", name, ns);
+    info!("Reconciled NooBaaSource \"{}\" in {}", name, ns);
 
     // If no events were received, check back every 30 minutes
     Ok(ReconcilerAction {
@@ -124,7 +199,7 @@ pub struct Metrics {
 impl Metrics {
     fn new() -> Self {
         let reconcile_histogram = register_histogram_vec!(
-            "foo_controller_reconcile_duration_seconds",
+            "noobaa_source_controller_reconcile_duration_seconds",
             "The duration of reconcile to complete in seconds",
             &[],
             vec![0.01, 0.1, 0.25, 0.5, 1., 5., 15., 60.]
@@ -132,7 +207,7 @@ impl Metrics {
         .unwrap();
 
         Metrics {
-            handled_events: register_int_counter!("foo_controller_handled_events", "handled events").unwrap(),
+            handled_events: register_int_counter!("noobaa_source_controller_handled_events", "handled events").unwrap(),
             reconcile_duration: reconcile_histogram,
         }
     }
@@ -150,7 +225,7 @@ impl State {
     fn new() -> Self {
         State {
             last_event: Utc::now(),
-            reporter: "foo-controller".into(),
+            reporter: "noobaa-source-controller".into(),
         }
     }
 }
@@ -162,7 +237,7 @@ pub struct Manager {
     state: Arc<RwLock<State>>,
 }
 
-/// Example Manager that owns a Controller for Foo
+/// Example Manager that owns a Controller for NooBaaSource
 impl Manager {
     /// Lifecycle initialization interface for app
     ///
@@ -178,15 +253,15 @@ impl Manager {
             state: state.clone(),
         });
 
-        let foos = Api::<Foo>::all(client);
+        let noobaa_sources = Api::<NooBaaSource>::all(client);
         // Ensure CRD is installed before loop-watching
-        let _r = foos
+        let _r = noobaa_sources
             .list(&ListParams::default().limit(1))
             .await
             .expect("is the crd installed? please run: cargo run --bin crdgen | kubectl apply -f -");
 
         // All good. Start controller and return its future.
-        let drainer = Controller::new(foos, ListParams::default())
+        let drainer = Controller::new(noobaa_sources, ListParams::default())
             .run(reconcile, error_policy, context)
             .filter_map(|x| async move { std::result::Result::ok(x) })
             .for_each(|_| futures::future::ready(()))

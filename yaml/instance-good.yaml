@@ -1,7 +1,15 @@
-apiVersion: clux.dev/v1
-kind: Foo
+apiVersion: knative.dev/v1
+kind: NooBaaSource
 metadata:
   name: good
 spec:
-  name: good foo
-  info: good person, good instance
+  name: good noobaa source
+  source:
+    rpcUrl: ws://noobaa-mgmt.somewhwere:1717/
+    rpcSecret: noobaa-mgmt.somewhwere
+    bucket: first-bucket
+  sink:
+    ref:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      name: event-display

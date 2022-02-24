@@ -1,5 +1,5 @@
-NAME := "controller"
-REPO := "kube-rs"
+NAME := "rusty-nail"
+REPO := "quay.io/baum"
 VERSION := `git rev-parse HEAD`
 SEMVER_VERSION := `grep version Cargo.toml | awk -F"\"" '{print $2}' | head -n 1`
 
@@ -8,8 +8,8 @@ default:
 
 # generate and install crd into the cluster
 install-crd:
-  cargo run --bin crdgen > yaml/foo-crd.yaml
-  kubectl apply -f yaml/foo-crd.yaml
+  cargo run --bin crdgen > yaml/noobaa-source-crd.yaml
+  kubectl apply -f yaml/noobaa-source-crd.yaml
 
 # run with opentelemetry
 run-telemetry:
@@ -26,11 +26,8 @@ compile:
     -v cargo-cache:/root/.cargo \
     -v $PWD:/volume \
     -w /volume \
-    -t clux/muslrust:stable \
+    -t rust \
     cargo build --release --bin controller
-  # TODO: re-enable --features=telemetry
-  sudo chown $USER:$USER -R target
-  mv target/x86_64-unknown-linux-musl/release/controller .
 
 # docker build (requires compile step first)
 build:
